@@ -1,11 +1,13 @@
 const EventEmitter = require('events').EventEmitter;
 const { GlideClient } = require('@valkey/valkey-glide');
-
-function GlideSessionStore(config){
-	if(!new.target){
+const { scanPerform } = require('./utils');
+function GlideSessionStore(config) {
+	if (!new.target) {
 		return new GlideSessionStore(...arguments);
 	}
 
+	// This is just for type hinting, just to make it more fun to work
+	/** @type {GlideClient} */
 	let client;
 	const newStore = new EventEmitter();
 
@@ -13,10 +15,8 @@ function GlideSessionStore(config){
 		all: {
 			value: async function(cb){
 				try {
-					const keys = await client.keys('sess:*');
-					const sessions = await Promise.all(keys.map(key => client.get(key)));
-					const parsedSessions = sessions.map(session => JSON.parse(session));//.filter(Boolean);
-					cb(null, parsedSessions);
+					const session = (await scanPerform(client, 'sess:*', client.get)).map(data => JSON.parse(data));
+					cb(null, session);
 				} catch (err) {
 					cb(err);
 				}
@@ -25,8 +25,7 @@ function GlideSessionStore(config){
 		clear: {
 			value: async function(cb){
 				try {
-					const keys = await client.keys('sess:*');
-					if (keys.length) await client.del(keys);
+					await scanPerform(client, 'sess:*', client.del);
 					cb(null);
 				} catch (err) {
 					cb(err);
@@ -36,7 +35,7 @@ function GlideSessionStore(config){
 		destroy: {
 			value: async function(cb){
 				try{
-					await client.del(`sess:${sid}`);
+					await client.del([`sess:${sid}`]);
 					cb(null);
 				}catch (err){
 					cb(err);
@@ -60,21 +59,24 @@ function GlideSessionStore(config){
 			}
 		},
 		length: {
-			value: async function(cb){
-				try{
-					const keys = await client.keys('sess:*');
-					cb(null, keys.length);
-				}catch(err) {
+			value: async function (cb) {
+				try {
+					const keysSet = new Set();
+					await scanPerform(client, 'sess:*', key => {
+						keysSet.add(key);
+					});
+					const length = keysSet.size;
+					delete keysSet;
+					cb(null, length);
+				} catch (err) {
 					cb(err);
 				}
 			}
 		},
 		set: {
-			value: async function(cb){
-				try{
-					await client.set(`sess:${sid}`, JSON.stringify(session), {
-						EX: this.ttl
-					});
+			value: async function (sid, session, cb) {
+				try {
+					await client.set(`sess:${sid}`, JSON.stringify(session), { expiry: this.ttl, conditionalSet: "onlyIfExists" });
 					cb(null);
 				}catch(err) {
 					cb(err);
@@ -82,11 +84,9 @@ function GlideSessionStore(config){
 			}
 		},
 		touch: {
-			value: async function(cb){
-				try{
-					await client.set(`sess:${sid}`, JSON.stringify(session), {
-						EX: this.ttl
-					});
+			value: async function (sid, session, cb) {
+				try {
+					await client.set(`sess:${sid}`, JSON.stringify(session), { expiry: this.ttl, conditionalSet: "onlyIfExists" });
 					cb(null);
 				}catch(err) {
 					cb(err);
